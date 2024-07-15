@@ -6,7 +6,7 @@ library(openxlsx)
 
 rm(list = ls())
 
-setwd('C:/Users/JPunzalan/OneDrive - LSU AgCenter/Desktop/LSU_Haplotypes_Jen_64/repository_snp_6/Naming')
+setwd('C:/Users/JPunzalan/OneDrive - LSU AgCenter/Desktop/Final_Haplotype/repository_snp_1/Naming')
 
 # Read the CSV files
 split1 <- read.csv("grouping_snp_split1.csv")
