@@ -1,19 +1,80 @@
 # Run from RStudio with source("run_haplotype.R"), then call run_haplotype().
-# In a terminal, use Rscript run_haplotype.R <snp-csv> [output-folder].
+# In a terminal, use Rscript run_haplotype.R <snp-file> [output-folder] [sheet-name].
 
-read_haplotype_input <- function(path, marker_pattern) {
-  data <- utils::read.csv(
-    path, colClasses = "character", check.names = FALSE,
-    na.strings = "", row.names = NULL, fileEncoding = "UTF-8-BOM"
+haplotype_excel_cells <- function(workbook, sheet, rows = NULL) {
+  # Reading the header as data preserves the original text and column labels.
+  openxlsx::read.xlsx(
+    workbook, sheet = sheet, rows = rows, colNames = FALSE,
+    skipEmptyRows = TRUE, skipEmptyCols = FALSE, na.strings = ""
   )
-  if (!nrow(data) || anyDuplicated(names(data)) || any(!nzchar(names(data)))) {
-    stop("The CSV must have data rows and unique, nonempty column names.", call. = FALSE)
+}
+
+haplotype_excel_headers <- function(cells) {
+  vapply(cells, function(column) as.character(column[1L]), character(1L), USE.NAMES = FALSE)
+}
+
+haplotype_excel_sheets <- function(workbook, marker_pattern) {
+  sheets <- as.character(names(workbook))
+  matches <- vapply(sheets, function(sheet) {
+    cells <- suppressWarnings(haplotype_excel_cells(workbook, sheet, rows = 1L))
+    if (is.null(cells)) {
+      # Leading blank rows are skipped by the full read, including at import.
+      cells <- suppressWarnings(haplotype_excel_cells(workbook, sheet))
+    }
+    headers <- haplotype_excel_headers(cells)
+    id <- if ("Line" %in% headers) "Line" else "germplasmName"
+    id %in% headers &&
+      !anyNA(headers) && !anyDuplicated(headers) && all(nzchar(headers)) &&
+      any(grepl(marker_pattern, setdiff(headers, id), ignore.case = TRUE))
+  }, logical(1L))
+  sheets[matches]
+}
+
+haplotype_input_sheets <- function(path, marker_pattern = "^SNP_chr") {
+  if (!identical(tolower(tools::file_ext(path)), "xlsx")) return(character())
+  haplotype_excel_sheets(openxlsx::loadWorkbook(path), marker_pattern)
+}
+
+read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
+  extension <- tolower(tools::file_ext(path))
+  if (identical(extension, "xlsx")) {
+    workbook <- openxlsx::loadWorkbook(path)
+    if (is.null(sheet)) {
+      matches <- haplotype_excel_sheets(workbook, marker_pattern)
+      if (!length(matches)) {
+        stop("No XLSX sheet has a Line or germplasmName column and matching SNP columns.",
+             call. = FALSE)
+      }
+      if (length(matches) > 1L) {
+        stop("Select an XLSX sheet explicitly. Matching sheets are ",
+             paste(shQuote(matches), collapse = ", "), ".", call. = FALSE)
+      }
+      sheet <- matches[1L]
+    } else if (!is.character(sheet) || length(sheet) != 1L || !sheet %in% names(workbook)) {
+      stop("Choose an existing worksheet by name.", call. = FALSE)
+    }
+    cells <- haplotype_excel_cells(workbook, sheet)
+    headers <- haplotype_excel_headers(cells)
+    data <- as.data.frame(lapply(cells, function(column) as.character(column[-1L])),
+                          stringsAsFactors = FALSE)
+    names(data) <- headers
+  } else if (identical(extension, "csv")) {
+    if (!is.null(sheet)) stop("The sheet argument is only used for XLSX inputs.", call. = FALSE)
+    data <- utils::read.csv(
+      path, colClasses = "character", check.names = FALSE,
+      na.strings = "", row.names = NULL, fileEncoding = "UTF-8-BOM"
+    )
+  } else {
+    stop("Choose an SNP input file ending in .csv or .xlsx.", call. = FALSE)
+  }
+  if (!nrow(data) || anyNA(names(data)) || anyDuplicated(names(data)) || any(!nzchar(names(data)))) {
+    stop("The SNP input needs data rows and unique, nonempty column names.", call. = FALSE)
   }
   if (!"Line" %in% names(data) && "germplasmName" %in% names(data)) {
     names(data)[names(data) == "germplasmName"] <- "Line"
   }
   if (!"Line" %in% names(data)) {
-    stop("The SNP CSV must contain a Line or germplasmName column.", call. = FALSE)
+    stop("The SNP input must contain a Line or germplasmName column.", call. = FALSE)
   }
   data$Line <- trimws(data$Line)
   if (anyNA(data$Line) || any(!nzchar(data$Line)) || anyDuplicated(data$Line)) {
@@ -34,7 +95,7 @@ read_haplotype_input <- function(path, marker_pattern) {
   calls[!homozygous & !heterozygous] <- NA_character_
   calls[heterozygous] <- "1"
 
-  list(data = data, calls = calls, unrecognized = unrecognized)
+  list(data = data, calls = calls, unrecognized = unrecognized, sheet = sheet)
 }
 
 haplotype_marker_qc <- function(calls, unrecognized, max_missing, max_heterozygous,
@@ -390,7 +451,7 @@ run_haplotype <- function(
     max_depth = 3L, max_missing = 0.10, max_heterozygous = 0.10,
     report_max_heterozygous = 0.20, split_rule = "highest_maf",
     min_maf = 0.35, fallback_rank = 5L, marker_pattern = "^SNP_chr",
-    overwrite = FALSE) {
+    overwrite = FALSE, sheet = NULL) {
   if (!requireNamespace("openxlsx", quietly = TRUE)) {
     stop('Install the workbook package once with install.packages("openxlsx").', call. = FALSE)
   }
@@ -414,16 +475,18 @@ run_haplotype <- function(
          ". Choose another output folder or set overwrite = TRUE in R.", call. = FALSE)
   }
   if (normalizePath(input_csv, mustWork = TRUE) %in% normalizePath(paths[existing])) {
-    stop("Choose an output folder that keeps the input CSV separate from the results.", call. = FALSE)
+    stop("Choose an output folder that keeps the SNP input separate from the results.", call. = FALSE)
   }
 
-  input <- read_haplotype_input(input_csv, marker_pattern)
+  input <- read_haplotype_input(input_csv, marker_pattern, sheet = sheet)
   qc <- haplotype_marker_qc(input$calls, input$unrecognized, max_missing,
                             max_heterozygous, report_max_heterozygous)
   split <- split_haplotypes(input$calls[, qc$Used_For_Splitting, drop = FALSE],
                            max_depth, split_rule, min_maf, fallback_rank)
-  settings <- c(list(
-    input = basename(input_csv), lines = nrow(input$data), markers = nrow(qc),
+  settings <- list(input = basename(input_csv))
+  if (!is.null(input$sheet)) settings$sheet <- input$sheet
+  settings <- c(settings, list(
+    lines = nrow(input$data), markers = nrow(qc),
     max_depth = max_depth, split_rule = split_rule,
     fallback_rank = fallback_rank, marker_pattern = marker_pattern
   ), rates)
@@ -453,11 +516,14 @@ run_haplotype <- function(
 
 if (sys.nframe() == 0L) {
   args <- commandArgs(trailingOnly = TRUE)
+  usage <- "Usage: Rscript run_haplotype.R <snp-file.csv|snp-file.xlsx> [output-folder] [sheet-name]"
   if (length(args) == 1L && args[1L] %in% c("-h", "--help")) {
-    cat("Usage: Rscript run_haplotype.R <snp-csv> [output-folder]\n")
-  } else if (!length(args) || length(args) > 2L) {
-    stop("Usage: Rscript run_haplotype.R <snp-csv> [output-folder]", call. = FALSE)
+    cat(usage, "\n", sep = "")
+  } else if (!length(args) || length(args) > 3L) {
+    stop(usage, call. = FALSE)
   } else {
-    do.call(run_haplotype, as.list(args))
+    params <- as.list(args[seq_len(min(2L, length(args)))])
+    if (length(args) == 3L) params$sheet <- args[3L]
+    do.call(run_haplotype, params)
   }
 }

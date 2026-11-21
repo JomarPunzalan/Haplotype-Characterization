@@ -2,15 +2,23 @@
 
 Run SNP quality checks, haplotype splitting, line assignments, and the Excel report from one R script.
 
-## Run it in RStudio
+## Use the Shiny app
 
-Install the workbook package once.
+Install the app packages once.
 
 ```r
-install.packages("openxlsx")
+install.packages(c("shiny", "openxlsx"))
 ```
 
-Open the repository folder in RStudio and run the following, using the path to your original SNP CSV.
+Open the repository folder in RStudio and click **Run App** in `app.R`, or run `shiny::runApp(".")`.
+
+Upload a **CSV** or **XLSX** containing the original SNP calls. The app runs the workflow as soon as the file uploads. If several Excel sheets have line IDs and SNP columns, the app uses the first and lets you switch sheets.
+
+Download the finished Excel report or a ZIP containing the line assignments, representative haplotypes, and allele similarity CSVs. Store line IDs as text in Excel to preserve leading zeros.
+
+## Run the script directly
+
+From the repository folder, you can also use the same workflow in RStudio with your SNP file path.
 
 ```r
 source("run_haplotype.R")
@@ -27,7 +35,7 @@ With omitted output folder, the script creates `haplotype_results` next to the i
 
 ## Input and results
 
-The CSV needs a unique `Line` or `germplasmName` for each sample and marker columns beginning with `SNP_chr`. Use A, C, G, and T for homozygous calls. The workflow recognizes slash or asterisk calls and `1` as unresolved or heterozygous, and treats `FAIL`, `99`, and blanks as missing. Original marker values stay in the line report. Include `general_grouping` if you want a cross-tabulation against your existing groups.
+The CSV or Excel worksheet needs a unique `Line` or `germplasmName` for each sample and marker columns beginning with `SNP_chr`. Use A, C, G, and T for homozygous calls. The workflow recognizes slash or asterisk calls and `1` as unresolved or heterozygous, and treats `FAIL`, `99`, and blanks as missing. Original marker values stay in the line report. Include `general_grouping` if you want a cross-tabulation against your existing groups.
 
 - **output.xlsx** contains SNP quality and frequency summaries, split markers, line assignments, representative haplotypes, and group allele similarity.
 - **final_merged_with_specific2.csv** contains the grouping path and original marker calls for each line. A `0` denotes a depth where the line's group was never split. A `U` in the specific path denotes an unresolved or missing call at a split marker. Those lines follow the major branch, following the original convention.
