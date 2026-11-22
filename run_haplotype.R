@@ -1,6 +1,8 @@
 # Run from RStudio with source("run_haplotype.R"), then call run_haplotype().
 # In a terminal, use Rscript run_haplotype.R <snp-file> [output-folder] [sheet-name].
 
+haplotype_grouping_columns <- c("specific_grouping", "general_grouping")
+
 haplotype_excel_cells <- function(workbook, sheet, rows = NULL) {
   # Reading the header as data preserves the original text and column labels.
   openxlsx::read.xlsx(
@@ -22,10 +24,10 @@ haplotype_excel_sheets <- function(workbook, marker_pattern) {
       cells <- suppressWarnings(haplotype_excel_cells(workbook, sheet))
     }
     headers <- haplotype_excel_headers(cells)
-    id <- if ("Line" %in% headers) "Line" else "germplasmName"
-    id %in% headers &&
+    id_names <- c("germplasmName", "Line")
+    any(headers %in% id_names) &&
       !anyNA(headers) && !anyDuplicated(headers) && all(nzchar(headers)) &&
-      any(grepl(marker_pattern, setdiff(headers, id), ignore.case = TRUE))
+      any(grepl(marker_pattern, setdiff(headers, id_names), ignore.case = TRUE))
   }, logical(1L))
   sheets[matches]
 }
@@ -42,7 +44,7 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
     if (is.null(sheet)) {
       matches <- haplotype_excel_sheets(workbook, marker_pattern)
       if (!length(matches)) {
-        stop("No XLSX sheet has a Line or germplasmName column and matching SNP columns.",
+        stop("No XLSX sheet has a germplasmName column (or legacy Line) and matching SNP columns.",
              call. = FALSE)
       }
       if (length(matches) > 1L) {
@@ -70,23 +72,31 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
   if (!nrow(data) || anyNA(names(data)) || anyDuplicated(names(data)) || any(!nzchar(names(data)))) {
     stop("The SNP input needs data rows and unique, nonempty column names.", call. = FALSE)
   }
-  if (!"Line" %in% names(data) && "germplasmName" %in% names(data)) {
-    names(data)[names(data) == "germplasmName"] <- "Line"
+  id <- intersect(c("germplasmName", "Line"), names(data))
+  if (!length(id)) {
+    stop("The SNP input must contain a germplasmName column (or legacy Line).", call. = FALSE)
   }
-  if (!"Line" %in% names(data)) {
-    stop("The SNP input must contain a Line or germplasmName column.", call. = FALSE)
+  added_grouping <- if (identical(names(data)[1L], "germplasmName")) {
+    setdiff(haplotype_grouping_columns, names(data))
+  } else {
+    character()
   }
-  data$Line <- trimws(data$Line)
-  if (anyNA(data$Line) || any(!nzchar(data$Line)) || anyDuplicated(data$Line)) {
-    stop("Line IDs must be present and unique.", call. = FALSE)
+  names(data)[match(id[1L], names(data))] <- "germplasmName"
+  data$Line <- NULL
+  data$germplasmName <- trimws(data$germplasmName)
+  if (anyNA(data$germplasmName) || any(!nzchar(data$germplasmName)) ||
+      anyDuplicated(data$germplasmName)) {
+    stop("germplasmName IDs must be present and unique.", call. = FALSE)
   }
 
-  markers <- setdiff(grep(marker_pattern, names(data), ignore.case = TRUE, value = TRUE), "Line")
+  markers <- setdiff(
+    grep(marker_pattern, names(data), ignore.case = TRUE, value = TRUE), "germplasmName"
+  )
   if (!length(markers)) {
     stop("No SNP columns match marker_pattern: ", marker_pattern, call. = FALSE)
   }
   calls <- as.matrix(data[markers])
-  rownames(calls) <- data$Line
+  rownames(calls) <- data$germplasmName
   calls[] <- toupper(trimws(calls))
   heterozygous <- !is.na(calls) & (calls == "1" | grepl("[/*]", calls))
   known_missing <- is.na(calls) | calls %in% c("", "FAIL", "99", "N", "NA", "NOCALL", "NO CALL", "-", ".")
@@ -95,7 +105,13 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
   calls[!homozygous & !heterozygous] <- NA_character_
   calls[heterozygous] <- "1"
 
-  list(data = data, calls = calls, unrecognized = unrecognized, sheet = sheet)
+  if (length(added_grouping)) {
+    for (column in added_grouping) data[[column]] <- "NoName"
+    data <- data[c(haplotype_grouping_columns, setdiff(names(data), haplotype_grouping_columns))]
+  }
+
+  list(data = data, calls = calls, unrecognized = unrecognized, sheet = sheet,
+       added_grouping = added_grouping)
 }
 
 haplotype_marker_qc <- function(calls, unrecognized, max_missing, max_heterozygous,
@@ -238,7 +254,7 @@ split_haplotypes <- function(calls, max_depth = 3L,
     apply(paths, 1L, paste, collapse = "--")
   }
   assignments <- data.frame(
-    Line = if (nrow(calls)) rownames(calls) else character(), grouping, split_markers,
+    germplasmName = if (nrow(calls)) rownames(calls) else character(), grouping, split_markers,
     Concatenated_Grouping = concatenate(grouping),
     Concatenated_Specific = concatenate(specific),
     check.names = FALSE, stringsAsFactors = FALSE
@@ -266,10 +282,11 @@ haplotype_allele_similarity <- function(consensus) {
   similarity
 }
 
-haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook) {
+haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook,
+                             added_grouping = character()) {
   markers <- colnames(calls)
-  ids <- as.character(assignments$Line)
-  raw_rows <- match(ids, data$Line)
+  ids <- as.character(assignments$germplasmName)
+  raw_rows <- match(ids, data$germplasmName)
   call_rows <- match(ids, rownames(calls))
   if (!length(ids) || !length(markers) || anyNA(raw_rows) || anyNA(call_rows)) {
     stop("Reporting requires line assignments and matching raw and normalized SNP calls.", call. = FALSE)
@@ -311,13 +328,17 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
 
   metadata <- setdiff(names(data), c(names(assignments), "Grouping_ID", markers))
   line_assignments <- data.frame(
-    Line = ids,
+    germplasmName = ids,
     Grouping_ID = group_ids,
-    assignments[, setdiff(names(assignments), "Line"), drop = FALSE],
+    assignments[, setdiff(names(assignments), "germplasmName"), drop = FALSE],
     data[, c(metadata, markers), drop = FALSE],
     check.names = FALSE,
     row.names = NULL
   )
+  if (length(added_grouping)) {
+    other_columns <- setdiff(names(line_assignments), haplotype_grouping_columns)
+    line_assignments <- line_assignments[c(haplotype_grouping_columns, other_columns)]
+  }
   filtered <- markers[markers %in% qc$Marker[qc$Included_In_Filtered_Report %in% TRUE]]
   filtered_samples <- line_assignments[, c(setdiff(names(line_assignments), markers), filtered), drop = FALSE]
   filtered_representatives <- representatives[, c(setdiff(names(representatives), markers), filtered), drop = FALSE]
@@ -360,7 +381,7 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
     "Rep_HaplotypeFiltered" = filtered_representatives,
     "SNP Frequency" = qc
   )
-  if ("general_grouping" %in% names(data)) {
+  if ("general_grouping" %in% names(data) && !"general_grouping" %in% added_grouping) {
     known <- as.character(data$general_grouping)
     known[is.na(known) | !nzchar(trimws(known))] <- "(Unassigned)"
     counts <- table(factor(group_ids, levels = seq_along(groups)), known)
@@ -386,16 +407,19 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
     T = openxlsx::createStyle(fontColour = "#9C0006", bgFill = "#FFC7CE")
   )
   uncertain <- openxlsx::createStyle(fontColour = "#FFFFFF", bgFill = "#3E424B")
-  marker_sheets <- c(
-    "Main Data Unfiltered SNPs", "Main Data Filtered SNPs",
-    "Rep_HaplotypeUnfiltered", "Rep_HaplotypeFiltered"
-  )
+  sample_sheets <- c("Main Data Unfiltered SNPs", "Main Data Filtered SNPs")
+  marker_sheets <- c(sample_sheets, "Rep_HaplotypeUnfiltered", "Rep_HaplotypeFiltered")
 
   for (sheet in names(sheets)) {
     contents <- sheets[[sheet]]
     openxlsx::addWorksheet(wb, sheet)
     openxlsx::writeData(wb, sheet, contents, headerStyle = header)
-    openxlsx::freezePane(wb, sheet, firstRow = TRUE, firstCol = TRUE)
+    first_active_col <- if (sheet %in% sample_sheets) {
+      match("germplasmName", names(contents)) + 1L
+    } else {
+      2L
+    }
+    openxlsx::freezePane(wb, sheet, firstActiveRow = 2L, firstActiveCol = first_active_col)
     openxlsx::setColWidths(wb, sheet, cols = seq_len(ncol(contents)), widths = 18)
     if (sheet %in% marker_sheets) {
       cols <- which(names(contents) %in% markers)
@@ -499,7 +523,8 @@ run_haplotype <- function(
   on.exit(unlink(staging, recursive = TRUE), add = TRUE)
 
   report <- haplotype_report(input$data, input$calls, split$assignments, split$splits, qc,
-                             settings, file.path(staging, files[["workbook"]]))
+                             settings, file.path(staging, files[["workbook"]]),
+                             added_grouping = input$added_grouping)
   utils::write.csv(report$line_assignments, file.path(staging, files[["line_assignments"]]),
                    row.names = FALSE, na = "")
   utils::write.csv(report$representatives, file.path(staging, files[["representatives"]]),
