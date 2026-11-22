@@ -37,7 +37,7 @@ With omitted output folder, the script creates `haplotype_results` next to the i
 
 ## Input and results
 
-The CSV or Excel worksheet needs a unique `Line` or `germplasmName` for each sample and marker columns beginning with `SNP_chr`. Use A, C, G, and T for homozygous calls. The workflow recognizes slash or asterisk calls and `1` as unresolved or heterozygous, and treats `FAIL`, `99`, and blanks as missing. Original marker values stay in the line report. Include `general_grouping` if you want a cross-tabulation against your existing groups.
+The CSV or Excel worksheet needs a unique `germplasmName` for each sample and marker columns beginning with `SNP_chr`. Older files can use `Line`. When both columns are present, the workflow uses `germplasmName`. The workbook and CSV exports use `germplasmName` for sample IDs. Use A, C, G, and T for homozygous calls. The workflow recognizes slash or asterisk calls and `1` as unresolved or heterozygous, and treats `FAIL`, `99`, and blanks as missing. Original marker values stay in the line report. Include `general_grouping` if you want a cross-tabulation against your existing groups.
 
 - **output.xlsx** contains SNP quality and frequency summaries, split markers, line assignments, representative haplotypes, and group allele similarity.
 - **final_merged_with_specific2.csv** contains the grouping path and original marker calls for each line. A `0` denotes a depth where the line's group was never split. A `U` in the specific path denotes an unresolved or missing call at a split marker. Those lines follow the major branch, following the original convention.

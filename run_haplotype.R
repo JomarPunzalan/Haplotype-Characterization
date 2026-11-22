@@ -22,10 +22,10 @@ haplotype_excel_sheets <- function(workbook, marker_pattern) {
       cells <- suppressWarnings(haplotype_excel_cells(workbook, sheet))
     }
     headers <- haplotype_excel_headers(cells)
-    id <- if ("Line" %in% headers) "Line" else "germplasmName"
-    id %in% headers &&
+    id_names <- c("germplasmName", "Line")
+    any(headers %in% id_names) &&
       !anyNA(headers) && !anyDuplicated(headers) && all(nzchar(headers)) &&
-      any(grepl(marker_pattern, setdiff(headers, id), ignore.case = TRUE))
+      any(grepl(marker_pattern, setdiff(headers, id_names), ignore.case = TRUE))
   }, logical(1L))
   sheets[matches]
 }
@@ -42,7 +42,7 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
     if (is.null(sheet)) {
       matches <- haplotype_excel_sheets(workbook, marker_pattern)
       if (!length(matches)) {
-        stop("No XLSX sheet has a Line or germplasmName column and matching SNP columns.",
+        stop("No XLSX sheet has a germplasmName column (or legacy Line) and matching SNP columns.",
              call. = FALSE)
       }
       if (length(matches) > 1L) {
@@ -70,23 +70,26 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
   if (!nrow(data) || anyNA(names(data)) || anyDuplicated(names(data)) || any(!nzchar(names(data)))) {
     stop("The SNP input needs data rows and unique, nonempty column names.", call. = FALSE)
   }
-  if (!"Line" %in% names(data) && "germplasmName" %in% names(data)) {
-    names(data)[names(data) == "germplasmName"] <- "Line"
+  id <- intersect(c("germplasmName", "Line"), names(data))
+  if (!length(id)) {
+    stop("The SNP input must contain a germplasmName column (or legacy Line).", call. = FALSE)
   }
-  if (!"Line" %in% names(data)) {
-    stop("The SNP input must contain a Line or germplasmName column.", call. = FALSE)
-  }
-  data$Line <- trimws(data$Line)
-  if (anyNA(data$Line) || any(!nzchar(data$Line)) || anyDuplicated(data$Line)) {
-    stop("Line IDs must be present and unique.", call. = FALSE)
+  names(data)[match(id[1L], names(data))] <- "germplasmName"
+  data$Line <- NULL
+  data$germplasmName <- trimws(data$germplasmName)
+  if (anyNA(data$germplasmName) || any(!nzchar(data$germplasmName)) ||
+      anyDuplicated(data$germplasmName)) {
+    stop("germplasmName IDs must be present and unique.", call. = FALSE)
   }
 
-  markers <- setdiff(grep(marker_pattern, names(data), ignore.case = TRUE, value = TRUE), "Line")
+  markers <- setdiff(
+    grep(marker_pattern, names(data), ignore.case = TRUE, value = TRUE), "germplasmName"
+  )
   if (!length(markers)) {
     stop("No SNP columns match marker_pattern: ", marker_pattern, call. = FALSE)
   }
   calls <- as.matrix(data[markers])
-  rownames(calls) <- data$Line
+  rownames(calls) <- data$germplasmName
   calls[] <- toupper(trimws(calls))
   heterozygous <- !is.na(calls) & (calls == "1" | grepl("[/*]", calls))
   known_missing <- is.na(calls) | calls %in% c("", "FAIL", "99", "N", "NA", "NOCALL", "NO CALL", "-", ".")
@@ -238,7 +241,7 @@ split_haplotypes <- function(calls, max_depth = 3L,
     apply(paths, 1L, paste, collapse = "--")
   }
   assignments <- data.frame(
-    Line = if (nrow(calls)) rownames(calls) else character(), grouping, split_markers,
+    germplasmName = if (nrow(calls)) rownames(calls) else character(), grouping, split_markers,
     Concatenated_Grouping = concatenate(grouping),
     Concatenated_Specific = concatenate(specific),
     check.names = FALSE, stringsAsFactors = FALSE
@@ -268,8 +271,8 @@ haplotype_allele_similarity <- function(consensus) {
 
 haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook) {
   markers <- colnames(calls)
-  ids <- as.character(assignments$Line)
-  raw_rows <- match(ids, data$Line)
+  ids <- as.character(assignments$germplasmName)
+  raw_rows <- match(ids, data$germplasmName)
   call_rows <- match(ids, rownames(calls))
   if (!length(ids) || !length(markers) || anyNA(raw_rows) || anyNA(call_rows)) {
     stop("Reporting requires line assignments and matching raw and normalized SNP calls.", call. = FALSE)
@@ -311,9 +314,9 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
 
   metadata <- setdiff(names(data), c(names(assignments), "Grouping_ID", markers))
   line_assignments <- data.frame(
-    Line = ids,
+    germplasmName = ids,
     Grouping_ID = group_ids,
-    assignments[, setdiff(names(assignments), "Line"), drop = FALSE],
+    assignments[, setdiff(names(assignments), "germplasmName"), drop = FALSE],
     data[, c(metadata, markers), drop = FALSE],
     check.names = FALSE,
     row.names = NULL

@@ -40,7 +40,7 @@ ui <- shiny::fluidPage(
     shiny::tags$section(
       class = "haplotype-panel",
       shiny::fileInput("snp_file", "SNP file", accept = c(".csv", ".xlsx"), width = "100%"),
-      shiny::helpText("Use a Line or germplasmName column and SNP_chr marker columns."),
+      shiny::helpText("Use germplasmName and SNP_chr marker columns. Older files with Line are accepted."),
       shiny::uiOutput("sheet_picker"),
       shiny::tags$section(
         class = "haplotype-settings",
@@ -139,7 +139,7 @@ server <- function(input, output, session) {
       }
       sheets <- if (extension == "xlsx") haplotype_input_sheets(path) else character()
       if (extension == "xlsx" && !length(sheets)) {
-        stop("The workbook needs a worksheet with a Line or germplasmName column and SNP_chr markers.",
+        stop("The workbook needs a worksheet with germplasmName (or legacy Line) and SNP_chr markers.",
              call. = FALSE)
       }
       list(path = path, directory = directory, name = name, sheets = sheets)
