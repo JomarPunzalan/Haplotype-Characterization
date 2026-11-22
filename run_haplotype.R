@@ -1,6 +1,8 @@
 # Run from RStudio with source("run_haplotype.R"), then call run_haplotype().
 # In a terminal, use Rscript run_haplotype.R <snp-file> [output-folder] [sheet-name].
 
+haplotype_grouping_columns <- c("specific_grouping", "general_grouping")
+
 haplotype_excel_cells <- function(workbook, sheet, rows = NULL) {
   # Reading the header as data preserves the original text and column labels.
   openxlsx::read.xlsx(
@@ -74,6 +76,11 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
   if (!length(id)) {
     stop("The SNP input must contain a germplasmName column (or legacy Line).", call. = FALSE)
   }
+  added_grouping <- if (identical(names(data)[1L], "germplasmName")) {
+    setdiff(haplotype_grouping_columns, names(data))
+  } else {
+    character()
+  }
   names(data)[match(id[1L], names(data))] <- "germplasmName"
   data$Line <- NULL
   data$germplasmName <- trimws(data$germplasmName)
@@ -98,7 +105,13 @@ read_haplotype_input <- function(path, marker_pattern, sheet = NULL) {
   calls[!homozygous & !heterozygous] <- NA_character_
   calls[heterozygous] <- "1"
 
-  list(data = data, calls = calls, unrecognized = unrecognized, sheet = sheet)
+  if (length(added_grouping)) {
+    for (column in added_grouping) data[[column]] <- "NoName"
+    data <- data[c(haplotype_grouping_columns, setdiff(names(data), haplotype_grouping_columns))]
+  }
+
+  list(data = data, calls = calls, unrecognized = unrecognized, sheet = sheet,
+       added_grouping = added_grouping)
 }
 
 haplotype_marker_qc <- function(calls, unrecognized, max_missing, max_heterozygous,
@@ -269,7 +282,8 @@ haplotype_allele_similarity <- function(consensus) {
   similarity
 }
 
-haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook) {
+haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook,
+                             added_grouping = character()) {
   markers <- colnames(calls)
   ids <- as.character(assignments$germplasmName)
   raw_rows <- match(ids, data$germplasmName)
@@ -321,6 +335,10 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
     check.names = FALSE,
     row.names = NULL
   )
+  if (length(added_grouping)) {
+    other_columns <- setdiff(names(line_assignments), haplotype_grouping_columns)
+    line_assignments <- line_assignments[c(haplotype_grouping_columns, other_columns)]
+  }
   filtered <- markers[markers %in% qc$Marker[qc$Included_In_Filtered_Report %in% TRUE]]
   filtered_samples <- line_assignments[, c(setdiff(names(line_assignments), markers), filtered), drop = FALSE]
   filtered_representatives <- representatives[, c(setdiff(names(representatives), markers), filtered), drop = FALSE]
@@ -363,7 +381,7 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
     "Rep_HaplotypeFiltered" = filtered_representatives,
     "SNP Frequency" = qc
   )
-  if ("general_grouping" %in% names(data)) {
+  if ("general_grouping" %in% names(data) && !"general_grouping" %in% added_grouping) {
     known <- as.character(data$general_grouping)
     known[is.na(known) | !nzchar(trimws(known))] <- "(Unassigned)"
     counts <- table(factor(group_ids, levels = seq_along(groups)), known)
@@ -389,16 +407,19 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
     T = openxlsx::createStyle(fontColour = "#9C0006", bgFill = "#FFC7CE")
   )
   uncertain <- openxlsx::createStyle(fontColour = "#FFFFFF", bgFill = "#3E424B")
-  marker_sheets <- c(
-    "Main Data Unfiltered SNPs", "Main Data Filtered SNPs",
-    "Rep_HaplotypeUnfiltered", "Rep_HaplotypeFiltered"
-  )
+  sample_sheets <- c("Main Data Unfiltered SNPs", "Main Data Filtered SNPs")
+  marker_sheets <- c(sample_sheets, "Rep_HaplotypeUnfiltered", "Rep_HaplotypeFiltered")
 
   for (sheet in names(sheets)) {
     contents <- sheets[[sheet]]
     openxlsx::addWorksheet(wb, sheet)
     openxlsx::writeData(wb, sheet, contents, headerStyle = header)
-    openxlsx::freezePane(wb, sheet, firstRow = TRUE, firstCol = TRUE)
+    first_active_col <- if (sheet %in% sample_sheets) {
+      match("germplasmName", names(contents)) + 1L
+    } else {
+      2L
+    }
+    openxlsx::freezePane(wb, sheet, firstActiveRow = 2L, firstActiveCol = first_active_col)
     openxlsx::setColWidths(wb, sheet, cols = seq_len(ncol(contents)), widths = 18)
     if (sheet %in% marker_sheets) {
       cols <- which(names(contents) %in% markers)
@@ -502,7 +523,8 @@ run_haplotype <- function(
   on.exit(unlink(staging, recursive = TRUE), add = TRUE)
 
   report <- haplotype_report(input$data, input$calls, split$assignments, split$splits, qc,
-                             settings, file.path(staging, files[["workbook"]]))
+                             settings, file.path(staging, files[["workbook"]]),
+                             added_grouping = input$added_grouping)
   utils::write.csv(report$line_assignments, file.path(staging, files[["line_assignments"]]),
                    row.names = FALSE, na = "")
   utils::write.csv(report$representatives, file.path(staging, files[["representatives"]]),
