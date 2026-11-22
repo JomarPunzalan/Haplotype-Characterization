@@ -14,6 +14,8 @@ Open the repository folder in RStudio and click **Run App** in `app.R`, or run `
 
 Upload a **CSV** or **XLSX** containing the original SNP calls. The app runs the workflow as soon as the file uploads. If several Excel sheets have line IDs and SNP columns, the app uses the first and lets you switch sheets.
 
+Use **Analysis settings** to set the maximum split depth, SNP selection rule, and any MAF cutoff or fallback. Expand **Marker quality filters** to change the missing and heterozygous thresholds. Percent fields use whole percentages such as 35 for a MAF of 0.35. Click **Run Analysis** to apply edits to the uploaded file.
+
 Download the finished Excel report or a ZIP containing the line assignments, representative haplotypes, and allele similarity CSVs. Store line IDs as text in Excel to preserve leading zeros.
 
 ## Run the script directly

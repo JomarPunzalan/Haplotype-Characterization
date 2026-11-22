@@ -2,6 +2,11 @@ source("run_haplotype.R", local = TRUE)
 
 options(shiny.maxRequestSize = max(100 * 1024^2, getOption("shiny.maxRequestSize", 0)))
 
+analysis_defaults <- as.list(formals(run_haplotype))[
+  c("max_depth", "split_rule", "min_maf", "fallback_rank",
+    "max_missing", "max_heterozygous", "report_max_heterozygous")
+]
+
 ui <- shiny::fluidPage(
   title = "Haplotype Characterization",
   shiny::tags$head(shiny::tags$style(shiny::HTML("
@@ -15,6 +20,11 @@ ui <- shiny::fluidPage(
     }
     .haplotype-panel .btn-primary { background: #461d7c; border-color: #461d7c; }
     .haplotype-panel .btn-primary:hover { background: #35145e; border-color: #35145e; }
+    .haplotype-settings { border-top: 1px solid #ded5e9; margin-top: 20px; padding: 16px 0; }
+    .haplotype-settings h2 { margin-top: 0; }
+    .haplotype-settings summary { color: #461d7c; cursor: pointer; font-weight: 600; }
+    .haplotype-settings details .row { margin-top: 12px; }
+    .haplotype-settings .action-button { margin-top: 14px; }
     .haplotype-downloads { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
     .haplotype-summary { margin-top: 22px; }
     .haplotype-summary table { max-width: 420px; }
@@ -32,6 +42,61 @@ ui <- shiny::fluidPage(
       shiny::fileInput("snp_file", "SNP file", accept = c(".csv", ".xlsx"), width = "100%"),
       shiny::helpText("Use a Line or germplasmName column and SNP_chr marker columns."),
       shiny::uiOutput("sheet_picker"),
+      shiny::tags$section(
+        class = "haplotype-settings",
+        shiny::tags$h2(class = "h4", "Analysis settings"),
+        shiny::fluidRow(
+          shiny::column(6, shiny::numericInput(
+            "max_depth", "Maximum split levels", analysis_defaults$max_depth, min = 1, step = 1
+          )),
+          shiny::column(6, shiny::selectInput(
+            "split_rule", "SNP selection rule",
+            choices = c(
+              "1. Highest MAF" = "highest_maf",
+              "2a. Minimum MAF" = "min_maf",
+              "2b. Minimum MAF with fallback" = "min_maf_fallback"
+            ),
+            selected = analysis_defaults$split_rule
+          ))
+        ),
+        shiny::conditionalPanel(
+          "input.split_rule === 'min_maf' || input.split_rule === 'min_maf_fallback'",
+          shiny::fluidRow(
+            shiny::column(6, shiny::numericInput(
+              "min_maf", "Minimum MAF (%)", 100 * analysis_defaults$min_maf, min = 0, max = 50, step = 1
+            )),
+            shiny::column(6, shiny::conditionalPanel(
+              "input.split_rule === 'min_maf_fallback'",
+              shiny::numericInput(
+                "fallback_rank", "Top MAF markers to consider", analysis_defaults$fallback_rank, min = 1, step = 1
+              )
+            ))
+          ),
+          shiny::helpText(paste(
+            "Among SNPs meeting the cutoff, the rule uses the smallest count of known homozygous calls.",
+            "Fallback considers the top MAF markers when none meets the cutoff."
+          ))
+        ),
+        shiny::tags$details(
+          shiny::tags$summary("Marker quality filters"),
+          shiny::fluidRow(
+            shiny::column(4, shiny::numericInput(
+              "max_missing", "Maximum missing calls (%)", 100 * analysis_defaults$max_missing,
+              min = 0, max = 100, step = 1
+            )),
+            shiny::column(4, shiny::numericInput(
+              "max_heterozygous", "Maximum unresolved or heterozygous calls for splitting (%)",
+              100 * analysis_defaults$max_heterozygous, min = 0, max = 100, step = 1
+            )),
+            shiny::column(4, shiny::numericInput(
+              "report_max_heterozygous", "Maximum unresolved or heterozygous calls in filtered report (%)",
+              100 * analysis_defaults$report_max_heterozygous, min = 0, max = 100, step = 1
+            ))
+          )
+        ),
+        shiny::actionButton("run_analysis", "Run Analysis", class = "btn-primary"),
+        shiny::helpText("Uploads run with the current settings. Click Run Analysis after making changes.")
+      ),
       shiny::uiOutput("run_status"),
       shiny::uiOutput("downloads"),
       shiny::uiOutput("group_summary")
@@ -101,19 +166,43 @@ server <- function(input, output, session) {
     }
   })
 
-  shiny::observeEvent(list(upload(), selected_sheet()), {
+  analysis_settings <- shiny::reactive({
+    number <- function(key, divisor = 1) {
+      value <- input[[key]]
+      if (is.null(value)) as.numeric(analysis_defaults[[key]]) else as.numeric(value) / divisor
+    }
+    rule <- if (is.null(input$split_rule)) analysis_defaults$split_rule else input$split_rule
+    list(
+      max_depth = number("max_depth"),
+      split_rule = rule,
+      min_maf = if (rule == "highest_maf") analysis_defaults$min_maf else number("min_maf", 100),
+      fallback_rank = if (rule == "min_maf_fallback") {
+        number("fallback_rank")
+      } else {
+        analysis_defaults$fallback_rank
+      },
+      max_missing = number("max_missing", 100),
+      max_heterozygous = number("max_heterozygous", 100),
+      report_max_heterozygous = number("report_max_heterozygous", 100)
+    )
+  })
+
+  shiny::observeEvent(list(upload(), selected_sheet(), input$run_analysis), {
     info <- upload()
     if (is.null(info$path)) return()
 
     sheet <- selected_sheet()
-    key <- c(info$path, sheet)
-    if (identical(report()$key, key)) return()
+    settings <- analysis_settings()
+    key <- list(path = info$path, sheet = sheet, settings = settings)
+    if (identical(report()$key, key) && is.null(report()$error)) return()
     clear_report()
 
     directory <- tempfile("report-", tmpdir = session_dir)
     processed <- shiny::withProgress(message = "Characterizing haplotypes", value = 0.2, {
       tryCatch({
-        paths <- run_haplotype(info$path, directory, sheet = sheet)
+        paths <- do.call(run_haplotype, c(list(
+          input_csv = info$path, output_dir = directory, sheet = sheet
+        ), settings))
         summary <- utils::read.csv(paths[["representatives"]], check.names = FALSE)
         list(
           key = key, directory = directory, paths = paths, sheet = sheet,
@@ -128,9 +217,21 @@ server <- function(input, output, session) {
     report(processed)
   })
 
+  settings_pending <- shiny::reactive({
+    result <- report()
+    !is.null(result) && !identical(result$key$settings, analysis_settings())
+  })
+
+  current_report <- shiny::reactive({
+    if (!settings_pending()) report()
+  })
+
   output$run_status <- shiny::renderUI({
     info <- upload()
-    result <- report()
+    if (settings_pending()) {
+      return(shiny::tags$p(role = "status", "Settings changed. Click Run Analysis to apply them."))
+    }
+    result <- current_report()
     error <- if (!is.null(info$error)) info$error else result$error
     if (!is.null(error)) {
       return(shiny::tags$p(class = "text-danger", role = "alert", error))
@@ -148,12 +249,13 @@ server <- function(input, output, session) {
           ngettext(groups, paste(groups, "group"), paste(groups, "groups"))
         )
       ),
-      shiny::helpText(source)
+      shiny::helpText(source),
+      if (groups == 1L) shiny::helpText("No groups split under these settings.")
     )
   })
 
   output$downloads <- shiny::renderUI({
-    if (is.null(report()$paths)) return(NULL)
+    if (is.null(current_report()$paths)) return(NULL)
     shiny::tags$div(
       class = "haplotype-downloads",
       shiny::downloadButton("download_workbook", "Download Excel report", class = "btn-primary"),
@@ -162,7 +264,7 @@ server <- function(input, output, session) {
   })
 
   output$group_summary <- shiny::renderUI({
-    if (is.null(report()$paths)) return(NULL)
+    if (is.null(current_report()$paths)) return(NULL)
     shiny::tags$div(
       class = "haplotype-summary",
       shiny::tags$h2(class = "h4", "Haplotype groups"),
@@ -170,12 +272,12 @@ server <- function(input, output, session) {
     )
   })
 
-  output$groups <- shiny::renderTable(report()$groups, rownames = FALSE)
+  output$groups <- shiny::renderTable(current_report()$groups, rownames = FALSE)
 
   output$download_workbook <- shiny::downloadHandler(
     filename = function() "haplotype_report.xlsx",
     content = function(file) {
-      path <- shiny::req(report()$paths[["workbook"]])
+      path <- shiny::req(current_report()$paths[["workbook"]])
       if (!file.copy(path, file, overwrite = TRUE)) stop("The workbook could not be downloaded.")
     }
   )
@@ -183,7 +285,7 @@ server <- function(input, output, session) {
   output$download_csvs <- shiny::downloadHandler(
     filename = function() "haplotype_csvs.zip",
     content = function(file) {
-      result <- report()
+      result <- current_report()
       shiny::req(result$paths)
       csvs <- result$paths[setdiff(names(result$paths), "workbook")]
       zip::zipr(file, basename(csvs), root = result$directory)
