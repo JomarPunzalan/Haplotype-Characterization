@@ -1,6 +1,19 @@
 # Run from RStudio with source("run_haplotype.R"), then call run_haplotype().
 # In a terminal, use Rscript run_haplotype.R <snp-file> [output-folder] [sheet-name].
 
+haplotype_script_directory <- function() {
+  for (frame in rev(sys.frames())) {
+    if (!is.null(frame$ofile)) {
+      directory <- dirname(frame$ofile)
+      if (file.exists(file.path(directory, "group_review.R"))) return(directory)
+    }
+  }
+  if (file.exists("group_review.R")) return(".")
+  file_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+  if (length(file_arg)) dirname(sub("^--file=", "", file_arg[[1L]])) else "."
+}
+source(file.path(haplotype_script_directory(), "group_review.R"), local = TRUE)
+
 haplotype_grouping_columns <- c("specific_grouping", "general_grouping")
 
 haplotype_excel_cells <- function(workbook, sheet, rows = NULL) {
@@ -283,7 +296,7 @@ haplotype_allele_similarity <- function(consensus) {
 }
 
 haplotype_report <- function(data, calls, assignments, splits, qc, settings, workbook,
-                             added_grouping = character()) {
+                             added_grouping = character(), suggestions = NULL) {
   markers <- colnames(calls)
   ids <- as.character(assignments$germplasmName)
   raw_rows <- match(ids, data$germplasmName)
@@ -392,6 +405,8 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
   sheets[["Allele Similarity"]] <- data.frame(
     Concatenated_Grouping = groups, similarity, check.names = FALSE, row.names = NULL
   )
+  review_sheet <- "Group Review Suggestions"
+  if (!is.null(suggestions)) sheets[[review_sheet]] <- suggestions
 
   wb <- openxlsx::createWorkbook()
   header <- openxlsx::createStyle(
@@ -456,6 +471,20 @@ haplotype_report <- function(data, calls, assignments, splits, qc, settings, wor
       }
     }
   }
+  if (!is.null(suggestions)) {
+    text_columns <- which(names(suggestions) %in% c("germplasmName", "Status"))
+    if (length(text_columns)) {
+      openxlsx::setColWidths(wb, review_sheet, cols = text_columns, widths = 28)
+    }
+    openxlsx::addFilter(wb, review_sheet, row = 1L, cols = seq_len(ncol(suggestions)))
+    score_columns <- which(names(suggestions) %in% c(
+      "Best_Score", "Runner_Up_Score", "Score_Margin", "Comparable_Coverage"
+    ))
+    if (nrow(suggestions) && length(score_columns)) {
+      openxlsx::addStyle(wb, review_sheet, style = openxlsx::createStyle(numFmt = "0%"),
+                        rows = seq_len(nrow(suggestions)) + 1L, cols = score_columns, gridExpand = TRUE)
+    }
+  }
 
   openxlsx::setColWidths(wb, "Description", cols = 1:2, widths = c(26, 70))
   openxlsx::setColWidths(wb, "Workflow", cols = 1:2, widths = c(24, 95))
@@ -475,7 +504,7 @@ run_haplotype <- function(
     max_depth = 3L, max_missing = 0.10, max_heterozygous = 0.10,
     report_max_heterozygous = 0.20, split_rule = "highest_maf",
     min_maf = 0.35, fallback_rank = 5L, marker_pattern = "^SNP_chr",
-    overwrite = FALSE, sheet = NULL) {
+    overwrite = FALSE, sheet = NULL, return_review = FALSE) {
   if (!requireNamespace("openxlsx", quietly = TRUE)) {
     stop('Install the workbook package once with install.packages("openxlsx").', call. = FALSE)
   }
@@ -507,6 +536,7 @@ run_haplotype <- function(
                             max_heterozygous, report_max_heterozygous)
   split <- split_haplotypes(input$calls[, qc$Used_For_Splitting, drop = FALSE],
                            max_depth, split_rule, min_maf, fallback_rank)
+  review <- haplotype_group_review(input$data, split$assignments, qc)
   settings <- list(input = basename(input_csv))
   if (!is.null(input$sheet)) settings$sheet <- input$sheet
   settings <- c(settings, list(
@@ -524,7 +554,7 @@ run_haplotype <- function(
 
   report <- haplotype_report(input$data, input$calls, split$assignments, split$splits, qc,
                              settings, file.path(staging, files[["workbook"]]),
-                             added_grouping = input$added_grouping)
+                             added_grouping = input$added_grouping, suggestions = review$suggestions)
   utils::write.csv(report$line_assignments, file.path(staging, files[["line_assignments"]]),
                    row.names = FALSE, na = "")
   utils::write.csv(report$representatives, file.path(staging, files[["representatives"]]),
@@ -536,6 +566,9 @@ run_haplotype <- function(
     stop("Could not save: ", paste(paths[!copied], collapse = ", "), call. = FALSE)
   }
   message("Wrote the haplotype workbook and CSVs to ", normalizePath(output_dir))
+  if (isTRUE(return_review)) {
+    return(invisible(list(paths = paths, review = review, assignments = split$assignments)))
+  }
   invisible(paths)
 }
 
