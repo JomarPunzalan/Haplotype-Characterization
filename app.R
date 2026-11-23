@@ -1,4 +1,6 @@
 source("run_haplotype.R", local = TRUE)
+source("group_review_map.R", local = TRUE)
+source("group_review_shiny.R", local = TRUE)
 
 options(shiny.maxRequestSize = max(100 * 1024^2, getOption("shiny.maxRequestSize", 0)))
 
@@ -33,6 +35,19 @@ ui <- shiny::fluidPage(
     .haplotype-summary { margin-top: 22px; }
     .haplotype-summary table { max-width: 420px; }
     .haplotype-qc-table { overflow-x: auto; }
+    .review-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
+    .review-controls .form-group { margin-bottom: 8px; }
+    .review-inspector { border-top: 1px solid #ded5e9; margin-top: 20px; padding-top: 16px; }
+    .review-allele {
+      display: inline-block; min-width: 1.8em; border-radius: 4px; padding: 2px 5px;
+      text-align: center; font-weight: 600; background: #ece9ef; color: #231b32;
+    }
+    .review-allele-A { color: #714800; background: #ffeb9c; }
+    .review-allele-C { color: #00522a; background: #c6efce; }
+    .review-allele-G { color: #002f69; background: #b8cce4; }
+    .review-allele-T { color: #861326; background: #ffc7ce; }
+    .review-map-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; }
+    .review-map-swatch { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; }
     @media (max-width: 770px) {
       .haplotype-page { margin: 22px auto; }
       .haplotype-layout { grid-template-columns: minmax(0, 1fr); }
@@ -114,6 +129,10 @@ ui <- shiny::fluidPage(
             shiny::uiOutput("qc_status"),
             shiny::uiOutput("qc_download"),
             shiny::tags$div(class = "haplotype-qc-table", shiny::tableOutput("qc_table"))
+          ),
+          shiny::tabPanel(
+            "Group Review", value = "group_review",
+            group_review_ui("group_review")
           )
         )
       )
@@ -328,13 +347,15 @@ server <- function(input, output, session) {
     directory <- tempfile("report-", tmpdir = session_dir)
     processed <- shiny::withProgress(message = "Characterizing haplotypes", value = 0.2, {
       tryCatch({
-        paths <- do.call(run_haplotype, c(list(
-          input_csv = info$path, output_dir = directory, sheet = sheet
+        result <- do.call(run_haplotype, c(list(
+          input_csv = info$path, output_dir = directory, sheet = sheet, return_review = TRUE
         ), settings))
+        paths <- result$paths
         summary <- utils::read.csv(paths[["representatives"]], check.names = FALSE)
         list(
           key = key, directory = directory, paths = paths, sheet = sheet,
-          groups = data.frame(Group = summary$Concatenated_Grouping, Lines = summary$Grouping_Count)
+          groups = data.frame(Group = summary$Concatenated_Grouping, Lines = summary$Grouping_Count),
+          review = result$review, assignments = result$assignments
         )
       }, error = function(e) {
         unlink(directory, recursive = TRUE)
@@ -353,6 +374,7 @@ server <- function(input, output, session) {
   current_report <- shiny::reactive({
     if (!settings_pending()) report()
   })
+  group_review_server("group_review", current_report, settings_pending, report)
 
   output$run_status <- shiny::renderUI({
     info <- upload()

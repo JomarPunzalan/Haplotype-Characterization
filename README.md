@@ -21,6 +21,22 @@ Use the left controls to set SNP filtering limits, maximum split depth, and the 
 
 Download the finished Excel report or a ZIP containing the line assignments, representative haplotypes, and allele similarity CSVs. Store line IDs as text in Excel to preserve leading zeros.
 
+### Review uncertain lines
+
+Open **Group Review** to review lines with a `U` at a split SNP. The app compares their SNP calls with signatures built from lines in the current upload with resolved calls at their splits. It uses QC-passed markers and looks for consistent alleles that differ between groups. Matching homozygous calls give full support. A call such as `A/G` gives partial support to either matching allele and cannot separate two groups that expect `A` and `G`. Missing calls and calls such as `1` and `*/*` give no allele-level evidence.
+
+The **Group Review Suggestions** worksheet in the Excel report shows the original group, candidates, supporting SNP counts, and the reason for a suggestion or a **Needs Review** result. The signature scores describe agreement with this upload's reference lines. Group labels are specific to the split tree from the current run. In Shiny, inspect a line's colored calls and group signatures, then save and download review decisions before running a new analysis.
+
+At each SNP, a group signature requires calls from at least two resolved reference lines and at least half the references in that group, with at least 80% agreement on the allele. A suggestion requires calls at a quarter or more of the SNPs that distinguish the candidates, at least two SNPs favoring the best group, at least 60% weighted agreement, and a lead of at least 15 percentage points in the head-to-head comparisons. A line also stays under review if its original group lacks a usable signature.
+
+Install `uwot` once to use the **UMAP** tab.
+
+```r
+install.packages("uwot")
+```
+
+Click **Build UMAP** to explore lines with comparable calls at half or more of the QC-passed markers, with a minimum of two markers. Colors show original groups, and outlines identify lines flagged for review. Click a point to inspect its SNP letters. Drag a box and click **Review Selected Lines** to see the flagged lines in that area together. Use visible clusters as candidates for review and check the underlying SNP evidence before assigning a group.
+
 ## Run the script directly
 
 From the repository folder, you can also use the same workflow in RStudio with your SNP file path.
